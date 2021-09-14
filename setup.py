@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
   name='rclone-pathmap',
-  version='0.1.0',
+  version='0.1.1',
   py_modules=['rclone_pathmap'],
   url='https://github.com/maayanLab/rclone-pathmap/',
   author='Daniel J. B. Clarke',

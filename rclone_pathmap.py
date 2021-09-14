@@ -21,8 +21,9 @@ import yaml
 import click
 import asyncio
 import logging
-import functools
 import datetime
+import functools
+import contextlib
 from aiohttp import web
 from collections import OrderedDict
 from datetime import datetime
@@ -173,6 +174,18 @@ async def _serve_and_mount(mappings, upperdir, mountdir, *rclone_flags):
     stdout=sys.stdout,
     stderr=sys.stderr,
   )
+  return proc, runner
+
+@contextlib.asynccontextmanager
+async def RClonePathmap(mappings, upperdir, mountdir, *rclone_flags):
+  ''' Usage:
+  with tempfile.TemporaryDirectory() as tmpdir:
+    async with RClonePathmap({ "/a": ":s3,env_auth=True:bucket/input" }, ':s3,env_auth=True:bucket/workdir', tmpdir):
+      pass # do things in tmpdir
+  '''
+  proc, runner = await _serve_and_mount(mappings, upperdir, mountdir, *rclone_flags)
+  yield
+  proc.terminate()
   await proc.wait()
   await runner.cleanup()
 
@@ -191,20 +204,23 @@ def serve(config, listen):
   app = _create_app(yaml.load(config, Loader=yaml.BaseLoader))
   web.run_app(app, host=host, port=port)
 
+async def _mount_main(mappings, upperdir, mountdir, *rclone_flags):
+  proc, runner = await _serve_and_mount(mappings, upperdir, mountdir, *rclone_flags)
+  await proc.wait()
+  await runner.cleanup()
+
 @cli.command(context_settings=dict(ignore_unknown_options=True))
 @click.option('-c', '--config', default='-', type=click.File('r'), help='Configuration file (yaml) for lowerdir')
 @click.argument('upperdir', type=click.Path(exists=True, dir_okay=True, file_okay=False))
 @click.argument('mountdir', type=click.Path(exists=True, dir_okay=True, file_okay=False))
 @click.argument('rclone_flags', nargs=-1)
 def mount(upperdir, mountdir, config, rclone_flags):
-  asyncio.run(
-    _serve_and_mount(
-      yaml.load(config, Loader=yaml.BaseLoader),
-      upperdir,
-      mountdir,
-      *rclone_flags,
-    )
-  )
+  asyncio.run(_mount_main(
+    yaml.load(config, Loader=yaml.BaseLoader),
+    upperdir,
+    mountdir,
+    *rclone_flags,
+  ))
 
 if __name__ == '__main__':
   cli()
