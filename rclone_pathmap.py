@@ -23,13 +23,11 @@ import signal
 import asyncio
 import pathlib
 import logging
+import inspect
 import tempfile
 import datetime
-import functools
 import contextlib
-import inspect
 from aiohttp import web
-from collections import OrderedDict
 from datetime import datetime
 from dataclasses import dataclass
 from dateutil.parser import parse as fromTs
@@ -58,29 +56,9 @@ async def _try_wait_for(cond, args=tuple(), max_tries=3, backoff=1):
       return False
     await asyncio.sleep(backoff)
 
-def _async_lru_cache(cache_size=None):
-  def decorator(func):
-    _cache = {} if cache_size is None else OrderedDict()
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-      k = json.dumps(dict(args=args, kwargs=kwargs))
-      if k in _cache:
-        logger.debug(f"cache hit {func} {k}")
-        return _cache[k]
-      else:
-        logger.debug(f"cache miss {func} {k}")
-        _cache[k] = await func(*args, **kwargs)
-        if cache_size is not None:
-          while len(_cache) > cache_size:
-            _cache.popitem(False)
-      return _cache[k]
-    return wrapper
-  return decorator
-
 def _datetime_to_rfc2822(dt):
   return dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
-@_async_lru_cache()
 async def _rclone_file_headers(rclone_path):
   proc = await asyncio.create_subprocess_exec(
     'rclone', 'lsjson', rclone_path,
@@ -174,14 +152,61 @@ def _create_app(mappings):
   app.add_routes([web.get('/{path:.*}', handler)])
   return app
 
+class ServeSubprocessRunner:
+  def __init__(self, mappings) -> None:
+    self.mappings = mappings
+  #
+  async def start(self):
+    import re
+    import ast
+    self.proc = await asyncio.create_subprocess_exec(
+      sys.executable, '-u', __file__, '-v', 'serve', '-c', '-', '--listen', f"localhost:0",
+      stdin=asyncio.subprocess.PIPE,
+      stdout=sys.stdout,
+      stderr=asyncio.subprocess.PIPE,
+    )
+    read_queue = asyncio.Queue()
+    async def reader(proc, read_queue):
+      while not proc.stderr.at_eof():
+        line = (await proc.stderr.readline()).decode().strip()
+        logger.debug(line)
+        await read_queue.put(line)
+    self.proc_reader = asyncio.create_task(reader(self.proc, read_queue))
+    self.proc.stdin.write(yaml.dump(self.mappings).encode())
+    self.proc.stdin.write_eof()
+    await self.proc.stdin.drain()
+    while True:
+      line = await read_queue.get()
+      if not line:
+        read_queue.task_done()
+        raise Exception('Hit EOF')
+      M = re.match(r'^INFO:asyncio:<Server (.+)> is serving$', line)
+      read_queue.task_done()
+      if M:
+        break
+    #
+    self.addresses = [
+      ast.literal_eval(m.group(1))
+      for m in re.finditer(r'laddr=(\(.+?\))', M.group(1))
+    ]
+    #
+    async def consumer(queue):
+      while True:
+        item = await queue.get()
+        queue.task_done()
+        if not item:
+          break
+    self.proc_reader_consumer = asyncio.create_task(consumer(read_queue))
+  #
+  async def cleanup(self):
+    self.proc.terminate()
+    await asyncio.gather(self.proc_reader, self.proc_reader_consumer)
+    return await self.proc.wait()
+
 @contextlib.asynccontextmanager
 async def _serve(mappings):
-  app = _create_app(mappings)
-  runner = web.AppRunner(app)
-  await runner.setup()
-  site = web.TCPSite(runner, 'localhost', 0)
-  await site.start()
-  logger.info(runner.addresses)
+  runner = ServeSubprocessRunner(mappings)
+  await runner.start()
   try:
     yield runner
   finally:
@@ -215,8 +240,7 @@ async def RCloneMount(remote, mountdir, *flags):
   # start rclone mount
   proc = await asyncio.create_subprocess_exec(*args)
   # wait for directory to be mounted
-  while proc.returncode is None and not mountdir.is_mount():
-    await asyncio.sleep(1)
+  await _try_wait_for(mountdir.is_mount)
   # ensure the process is still running
   assert proc.returncode is None
   #
@@ -256,6 +280,8 @@ async def RClonePathmap(mappings, upperdir, mountdir, *rclone_flags):
 @click.option('-v', '--verbose', count=True, default=0, help='How verbose this should be, more -v = more verbose')
 def cli(verbose=0):
   logging.basicConfig(level=30 - (verbose*10))
+  if verbose > 0:
+    asyncio.get_event_loop().set_debug(True)
 
 @cli.command()
 @click.option('-c', '--config', default='-', type=click.File('r'), help='Configuration file (yaml)')
