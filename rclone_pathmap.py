@@ -9,7 +9,7 @@ provider is used to join this with the `upperdir` for read-write access.
 \b
 Example usage:
   ```bash
-  rclone-pathmap ':s3,env_auth=True:workbucket/workdir' mnt << END
+  rclone-pathmap mount ':s3,env_auth=True:workbucket/workdir' mnt << END
   /input-file-1: :s3,env_auth=True:mybucket/mybigfile
   /input-file-2: :ftp,host=ftp.example.com:myftp/file
   END
