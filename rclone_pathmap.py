@@ -273,7 +273,7 @@ async def _mount_main(mappings, upperdir, mountdir, *rclone_flags):
 
 @cli.command(context_settings=dict(ignore_unknown_options=True))
 @click.option('-c', '--config', default='-', type=click.File('r'), help='Configuration file (yaml) for lowerdir')
-@click.argument('upperdir', type=click.Path(exists=True, dir_okay=True, file_okay=False))
+@click.argument('upperdir', type=str)
 @click.argument('mountdir', type=click.Path(exists=True, dir_okay=True, file_okay=False))
 @click.argument('rclone_flags', nargs=-1)
 def mount(upperdir, mountdir, config, rclone_flags):
